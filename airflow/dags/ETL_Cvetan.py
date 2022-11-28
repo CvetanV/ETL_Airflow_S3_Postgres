@@ -16,12 +16,11 @@ yesterday = today - timedelta(days = 1)
 now = datetime.now()
 processed_date = now.strftime("%Y-%m-%d")
 
+psql = PostgresHook('docplanner_dwh')
+engine = create_engine('postgresql://postgres:postgres@postgres:5432/')
 s3 = S3Hook('docplanner_aws')
 s3_raw_bucket = "raw"
 s3_refined_bucket = "refined"
-
-psql = PostgresHook('docplanner_dwh')
-engine = create_engine('postgresql://postgres:postgres@postgres:5432/')
 
 args = {
     'owner': 'Airflow',
@@ -36,6 +35,7 @@ dag = DAG(
     tags=['ETL_workflow_tag']
 )
 
+# Fuction to create S3 buckets if they don't exist
 def create_s3_buckets():
     if not s3.check_for_bucket(s3_raw_bucket):
         s3.create_bucket("raw")
@@ -47,6 +47,7 @@ def create_s3_buckets():
     else:
         print("Refined bucket already created!")
 
+# Function to create postgres tables if they don't exist
 def create_postgres_tables():
     # psql.run("""DROP TABLE public.datacategories""")
     # psql.run("""DROP TABLE public.datasets""")
@@ -148,10 +149,14 @@ def create_postgres_tables():
     """, autocommit=True
     )
 
+# Functions that call the APIs, collect only the "results" and store the data as json in a folder
 def api_ingest_datacategories():
+    # API request
     response_datacategories = requests.get("https://www.ncei.noaa.gov/cdo-web/api/v2/datacategories?datasetid=GHCND",
                                            headers={'token':'BhTGUauitLtwSQTusVntADPdmDELhTNC'})
+    # Locate the results in the API response
     response_datacategories = response_datacategories.json()['results']
+    # Create a dictionary that will be saved as json
     json_datacategories = json.dumps(response_datacategories)
 
     print("Saving raw file to S3")
@@ -239,13 +244,20 @@ def api_ingest_data():
         s3.load_string(json_data, f"{yesterday}/data.json", bucket_name=s3_raw_bucket, replace=True)
         print(f"File data.json for date {yesterday} has been written to the bucket {s3_raw_bucket}")
 
-
+# Functions to refine the RAW data and store it in a postgres table and in s3 bucket
+## Here I save it as json file because the saving of a parquet file was not working for me (I have limited knowledge in
+## Airflow but with a bit more practice will be able to do everything that I need) and I normaly use
+## parquet format for storing the refined data
 def refine_datacategories():
+    # Read the RAW file from the RAW S3 bucket
     loaded_datacategories = s3.read_key(f'{yesterday}/datacategories.json', bucket_name=s3_raw_bucket)
+    # Load the data into a pandas dataframe
     df_datacategories = pd.read_json(loaded_datacategories)
+    # Transformation: add a column that shows when the processing of the data has been done
     df_datacategories['processed_date'] = processed_date
     print(df_datacategories)
 
+    # Saving the refined data in the S3 bucket as file
     print("Saving refined data to S3 refined layer")
     if not s3.check_for_bucket(s3_refined_bucket):
         print("Bucket is not preset")
@@ -255,6 +267,7 @@ def refine_datacategories():
                        replace=True)
         print(f"File datacategories_{today}.json has been written to the bucket {s3_refined_bucket}")
 
+    # Saving the refined data in a postgres table
     print("Start Insert into postgres table")
     df_datacategories.to_sql('datacategories', engine, if_exists='replace')
     print("Inserting into postgres table done")
@@ -373,6 +386,7 @@ def refine_data():
     df_data.to_sql('data', engine, if_exists='append')
     print("Inserting into postgres table done")
 
+# A simple function that checks if the data has been inserted in the postgres tables
 def check_processed_time():
     datacategories = psql.get_records(f"""SELECT * from public.datacategories where processed_date = '{processed_date}'""")
     datasets = psql.get_records(f"""SELECT * from public.datasets where processed_date = '{processed_date}'""")
@@ -412,7 +426,7 @@ def check_processed_time():
         print(f"Ingestion in table data for date {yesterday} is done!")
 
 # Calling the functions
-# Action create S3 bucket and Postgres tables
+# Actions create S3 bucket and Postgres tables
 create_s3_buckets = PythonOperator(
     task_id = "create_s3_buckets",
     dag=dag,
