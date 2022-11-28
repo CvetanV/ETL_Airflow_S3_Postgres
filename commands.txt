@@ -1,0 +1,8 @@
+start: docker-compose up -d --build
+stop: docker-compose down
+
+S3 commands:
+- create bucket: awslocal s3api create-bucket --bucket my-bucket --region us-east-1
+- list buckets: awslocal s3api list-buckets --query "Buckets[].Name"
+- put object in bucket: awslocal s3api put-object --bucket my-bucket --key main.py --body main.py
+- list objets in bucket: awslocal s3api list-objects --bucket refined --query 'Contents[].{Key: Key, Size: Size}'
